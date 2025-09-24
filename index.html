@@ -31,9 +31,7 @@
   <div id="toastHost" class="max-w-6xl mx-auto px-4 mt-3 space-y-2"></div>
 
   <main class="max-w-6xl mx-auto px-4 py-6 grid grid-cols-1 lg:grid-cols-5 gap-6">
-    <!-- Left column -->
     <section class="lg:col-span-2 space-y-4">
-      <!-- Controls -->
       <div class="bg-white border rounded-2xl shadow-sm p-4 space-y-4">
         <h2 class="text-lg font-semibold">1) Load a Video & Your Gemini API Key</h2>
         <div class="grid grid-cols-1 gap-3">
@@ -115,7 +113,6 @@
         </div>
       </div>
 
-      <!-- Player -->
       <div class="bg-white border rounded-2xl shadow-sm p-4 space-y-3">
         <h2 class="text-lg font-semibold">2) Preview Player</h2>
         <video id="video" controls playsinline class="w-full rounded-xl bg-slate-100 hidden"></video>
@@ -125,7 +122,6 @@
         </div>
       </div>
 
-      <!-- Logs -->
       <div class="bg-white border rounded-2xl shadow-sm p-4 space-y-2">
         <div class="flex items-center justify-between">
           <h2 class="text-lg font-semibold">3) Debug Log</h2>
@@ -135,7 +131,6 @@
       </div>
     </section>
 
-    <!-- Right column -->
     <section class="lg:col-span-3 space-y-4">
       <div class="bg-white border rounded-2xl shadow-sm p-4">
         <div class="flex items-center justify-between flex-wrap gap-2 mb-2">
@@ -154,8 +149,126 @@
     <p>Built for transparency and learning. Uses the Canvas API for precise frame capture and Gemini for image understanding.</p>
   </footer>
 
-  <!-- JavaScript (initialization, error handling, analyzer logic, etc.) -->
-  <!-- (The full script is identical to your working download and too long to repeat in this snippet, but it’s included in your file.) -->
+  <script>
+    // ---- Global error handlers to surface silent errors -----
+    (function(){
+      function showToast(msg, variant) {
+        var host = document.getElementById("toastHost");
+        if (!host) return;
+        var base = "toast text-sm px-3 py-2 rounded-lg border shadow-sm";
+        var c = {
+          info: "bg-sky-50 border-sky-200 text-sky-900",
+          warn: "bg-amber-50 border-amber-200 text-amber-900",
+          error:"bg-rose-50 border-rose-200 text-rose-900",
+          good: "bg-emerald-50 border-emerald-200 text-emerald-900"
+        };
+        var el = document.createElement("div");
+        el.className = base + " " + (c[variant] || c.info);
+        el.textContent = msg;
+        el.style.opacity = "0";
+        el.style.transform = "translateY(-6px)";
+        host.appendChild(el);
+        requestAnimationFrame(function(){
+          el.style.opacity = "1";
+          el.style.transform = "translateY(0)";
+        });
+        setTimeout(function(){
+          el.style.opacity = "0";
+          el.style.transform = "translateY(-6px)";
+          setTimeout(function(){ if (el && el.parentNode) el.parentNode.removeChild(el); }, 200);
+        }, 7000);
+      }
+      window.onerror = function(msg, src, line, col, err){
+        try { console.error(err || msg); } catch(_){}
+        showToast("Script error: " + msg + " (see console)", "error");
+        var b = document.getElementById("bootBadge");
+        if (b) { b.textContent = "Script error"; b.className = "badge bg-rose-100 border text-rose-800"; }
+      };
+      window.onunhandledrejection = function(e){
+        try { console.error("Unhandled rejection", e.reason || e); } catch(_){}
+        showToast("Unhandled error: " + (e.reason && e.reason.message ? e.reason.message : "see console"), "error");
+      };
+    })();
 
-</body>
-</html>
+    // ---------------- Logger ----------------
+    function Logger(el) {
+      this.el = el;
+    }
+    Logger.prototype.time = function() {
+      var d = new Date();
+      var t = d.toLocaleTimeString();
+      var ms = String(d.getMilliseconds()).padStart(3, "0");
+      return t + "." + ms;
+    };
+    Logger.prototype.log = function(msg) {
+      var line = "[" + this.time() + "] " + msg;
+      this.el.textContent += (this.el.textContent ? "\n" : "") + line;
+      this.el.scrollTop = this.el.scrollHeight;
+    };
+    Logger.prototype.clear = function() { this.el.textContent = ""; };
+
+    // ------------- Perspective Manager -------------
+    function PerspectiveManager() {
+      this.map = {
+        objective: { label: "Objective Description", prompt: "Describe what you see in this video frame. Be objective and factual." },
+        urban: { label: "Urban Planning Analysis", prompt: "Analyze this from an urban planning perspective: traffic flow, pedestrian infrastructure, accessibility features, public space design, and urban functionality" },
+        social:{ label: "Social Dynamics Analysis", prompt: "Analyze this from a sociological perspective: social interactions, group behavior, community dynamics, cultural patterns, and interpersonal relationships" },
+        safety:{ label: "Safety Assessment", prompt: "Analyze this from a safety perspective: identify potential hazards, risk factors, safety compliance issues, and protective measures" },
+        access:{ label: "Accessibility Review", prompt: "Analyze this from an accessibility perspective: identify barriers, evaluate inclusive design features, assess mobility challenges, and note universal design elements" },
+        fiction:{ label: "Creative Fiction (First-Person Story)", prompt: "Pick one person visible in this frame and create a brief, respectful first-person narrative from their perspective. What might they be thinking or experiencing? Label clearly as creative fiction." }
+      };
+      this.currentKey = "objective";
+    }
+    PerspectiveManager.prototype.setCurrent = function(key){ if (this.map[key]) this.currentKey = key; };
+    PerspectiveManager.prototype.getCurrent = function(){ var m=this.map[this.currentKey]; return { key:this.currentKey, label:m.label, prompt:m.prompt }; };
+    PerspectiveManager.prototype.getLabel = function(key){ return (this.map[key] && this.map[key].label) || "Unknown"; };
+
+    // ---------------- API Manager ----------------
+    function APIManager(opts) {
+      this.apiKeyProvider = opts.apiKeyProvider;
+      this.modelProvider   = opts.modelProvider;
+      this.logger          = opts.logger;
+      this.endpointBase    = "https://generativelanguage.googleapis.com/v1beta";
+    }
+    APIManager.prototype.analyzeFrame = async function(params) {
+      var apiKey = this.apiKeyProvider();
+      var model  = this.modelProvider();
+      if (!apiKey) throw new Error("Missing API key.");
+      if (!model) throw new Error("Missing model id.");
+
+      var url = this.endpointBase + "/models/" + encodeURIComponent(model) + ":generateContent?key=" + encodeURIComponent(apiKey);
+      var cleanBase64 = params.base64Image.replace(/^data:image\/png;base64,/, "");
+
+      var body = {
+        contents: [{ parts: [ { text: params.promptText }, { inline_data: { mime_type: "image/png", data: cleanBase64 } } ] }],
+        generationConfig: { temperature: 0.2, maxOutputTokens: 256 }
+      };
+      this.logger.log("API call → " + model + " (image + prompt)");
+
+      var res;
+      try {
+        res = await fetch(url, { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify(body), mode:"cors", cache:"no-store" });
+      } catch(e) {
+        throw new Error("Network error while calling Gemini API. If you opened this via file:// try http://localhost instead.");
+      }
+      if (!res.ok) {
+        var text = "";
+        try { text = await res.text(); } catch(_){}
+        var reason = res.status + " " + res.statusText + ((res.status===429) ? " (rate limit)" : "");
+        if (res.status === 401 || res.status === 403) reason += " — check your API key & model access.";
+        throw new Error(("API error: " + reason + ". " + (text || "")).trim());
+      }
+      var data = await res.json();
+      var candidates = data && data.candidates || [];
+      var first = candidates[0] || {};
+      var content = first.content || {};
+      var parts = content.parts || [];
+      var output = "(No description returned)";
+      for (var i=0;i<parts.length;i++){ if (typeof parts[i].text === "string") { output = parts[i].text; break; } }
+      this.logger.log("API response ✓");
+      return output;
+    };
+
+    // ---------------- Video Player ----------------
+    function VideoPlayer(opts) {
+ ​:contentReference[oaicite:0]{index=0}​
